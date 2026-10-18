@@ -1,4 +1,24 @@
-/* @ts-self-types="./maya_chronos.d.ts" */
+/**
+ * Gate plaque texts and zoom-button texts ([overview, detail]) in the page's language.
+ * @param {string} date
+ * @param {string} time
+ * @param {string} zoom_in
+ * @param {string} zoom_out
+ */
+export function set_labels(date, time, zoom_in, zoom_out) {
+    const ptr0 = passStringToWasm0(date, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(time, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(zoom_in, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(zoom_out, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.set_labels(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
 
 export function start() {
     wasm.start();
@@ -462,12 +482,12 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 4, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_d9efff8a1479ce00___convert__closures_____invoke___f64______true_);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_8da04ae61821a161___convert__closures_____invoke___f64______true_);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 3, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_d9efff8a1479ce00___convert__closures_____invoke_______true_);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_8da04ae61821a161___convert__closures_____invoke_______true_);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
@@ -491,12 +511,12 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen_d9efff8a1479ce00___convert__closures_____invoke_______true_(arg0, arg1) {
-    wasm.wasm_bindgen_d9efff8a1479ce00___convert__closures_____invoke_______true_(arg0, arg1);
+function wasm_bindgen_8da04ae61821a161___convert__closures_____invoke_______true_(arg0, arg1) {
+    wasm.wasm_bindgen_8da04ae61821a161___convert__closures_____invoke_______true_(arg0, arg1);
 }
 
-function wasm_bindgen_d9efff8a1479ce00___convert__closures_____invoke___f64______true_(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_d9efff8a1479ce00___convert__closures_____invoke___f64______true_(arg0, arg1, arg2);
+function wasm_bindgen_8da04ae61821a161___convert__closures_____invoke___f64______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_8da04ae61821a161___convert__closures_____invoke___f64______true_(arg0, arg1, arg2);
 }
 
 function addToExternrefTable0(obj) {
@@ -636,6 +656,12 @@ function passStringToWasm0(arg, malloc, realloc) {
 
     WASM_VECTOR_LEN = offset;
     return ptr;
+}
+
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
 }
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });

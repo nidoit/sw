@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Earth Monitor backend (zero dependencies, Node ≥ 18):
 //  • serves the static app with COOP/COEP headers → crossOriginIsolated → SharedArrayBuffer
-//  • /api/* caching proxy for upstream APIs (TTL per source, memory + disk) — NFR-3 rate limits
+//  • /api/* caching proxy for upstream APIs (TTL per source, memory + disk) to stay under rate limits
 //  • /ws WebSocket that pushes {type:"refresh", layer} when a cached source renews
 //
 // Env: PORT, SPACETRACK_USER, SPACETRACK_PASS, WAQI_TOKEN, FIRMS_MAP_KEY, NASA_API_KEY, OWM_KEY
@@ -11,8 +11,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CACHE_DIR = path.join(ROOT, 'server', '.cache');
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, '..', '..'); // earth/ — the web files; code/ is never served
+const CACHE_DIR = path.join(HERE, '.cache');
 const PORT = +process.env.PORT || 8080;
 const env = process.env;
 const MIN = 60e3, HOUR = 3600e3;
@@ -172,7 +173,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(v.body);
     }
     let file = path.normalize(path.join(ROOT, decodeURIComponent(url.pathname)));
-    if (!file.startsWith(ROOT) || file.includes(`${path.sep}server${path.sep}.cache`)) return send(res, 403, 'forbidden');
+    if (!file.startsWith(ROOT) || (file + path.sep).startsWith(path.join(ROOT, 'code') + path.sep)) return send(res, 403, 'forbidden');
     if ((await fs.stat(file).catch(() => null))?.isDirectory()) file = path.join(file, 'index.html');
     const body = await fs.readFile(file);
     res.writeHead(200, { ...ISOLATION, 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });
