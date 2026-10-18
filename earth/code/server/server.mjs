@@ -4,7 +4,7 @@
 //  • /api/* caching proxy for upstream APIs (TTL per source, memory + disk) to stay under rate limits
 //  • /ws WebSocket that pushes {type:"refresh", layer} when a cached source renews
 //
-// Env: PORT, SPACETRACK_USER, SPACETRACK_PASS, WAQI_TOKEN, FIRMS_MAP_KEY, NASA_API_KEY, OWM_KEY
+// Env: PORT, SPACETRACK_USER, SPACETRACK_PASS, WAQI_TOKEN, OPENAQ_API_KEY, FIRMS_MAP_KEY, NASA_API_KEY, OWM_KEY
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -97,11 +97,21 @@ async function spaceTrack(query) {
 const ymd = (d) => d.toISOString().slice(0, 10);
 const API = {
   async health() {
-    return { body: Buffer.from(JSON.stringify({ ok: true, owm: !!env.OWM_KEY, spacetrack: !!env.SPACETRACK_USER, waqi: !!env.WAQI_TOKEN, firms: !!env.FIRMS_MAP_KEY })), type: 'application/json', source: 'local' };
+    return { body: Buffer.from(JSON.stringify({ ok: true, owm: !!env.OWM_KEY, spacetrack: !!env.SPACETRACK_USER, waqi: !!env.WAQI_TOKEN, openaq: !!env.OPENAQ_API_KEY, firms: !!env.FIRMS_MAP_KEY })), type: 'application/json', source: 'local' };
   },
   aurora: () => cached('aurora', 10 * MIN, async () => ({ ...(await up('https://services.swpc.noaa.gov/json/ovation_aurora_latest.json')), source: 'NOAA SWPC' })),
   air: () => cached('air', HOUR, async () => {
     if (env.WAQI_TOKEN) return { ...(await up(`https://api.waqi.info/v2/map/bounds?latlng=-60,-180,85,180&networks=all&token=${env.WAQI_TOKEN}`)), source: 'waqi' };
+    if (env.OPENAQ_API_KEY) {
+      const all = [];
+      for (let page = 1; page <= 20; page++) {
+        const r = await up(`https://api.openaq.org/v3/parameters/2/latest?limit=1000&page=${page}`, { headers: { 'X-API-Key': env.OPENAQ_API_KEY } });
+        const res = JSON.parse(r.body).results || [];
+        all.push(...res);
+        if (res.length < 1000) break;
+      }
+      return { body: Buffer.from(openaqToStations(all)), type: 'application/json', source: 'OpenAQ (waqi)' };
+    }
     const lats = [], lons = [];
     for (let la = -60; la <= 80; la += 10) for (let lo = -180; lo < 180; lo += 10) { lats.push(la); lons.push(lo); }
     const parts = [];
@@ -153,12 +163,38 @@ const API = {
     if (!env.OWM_KEY || ![z, x, y].every(Number.isInteger) || z > 6) throw Object.assign(new Error('OWM unavailable'), { status: 503 });
     return cached(`clouds:${z}/${x}/${y}`, HOUR, async () => ({ ...(await up(`https://tile.openweathermap.org/map/clouds_new/${z}/${x}/${y}.png?appid=${env.OWM_KEY}`)), source: 'OpenWeatherMap' }));
   },
+  drought: (q) => {
+    const w = Math.min(+q.get('w') || 2048, 4096), h = Math.min(+q.get('h') || 1024, 2048);
+    return cached(`drought:${w}x${h}`, 24 * HOUR, async () => ({
+      ...(await up('https://drought.emergency.copernicus.eu/api/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=smang'
+        + `&SRS=EPSG:4326&BBOX=-180,-90,180,90&WIDTH=${w}&HEIGHT=${h}&STYLES=&FORMAT=image/png&TRANSPARENT=true&CROP=land`)),
+      source: 'Copernicus GDO',
+    }));
+  },
+  gfw: (q, rest) => {
+    const [kind, ...zxy] = rest;
+    const [z, x, y] = zxy.map(Number);
+    const path = { loss: 'umd_tree_cover_loss/latest', alerts: 'gfw_integrated_alerts/latest' }[kind];
+    if (!path || ![z, x, y].every(Number.isInteger) || z > 6) throw Object.assign(new Error('bad tile'), { status: 400 });
+    return cached(`deforest:${kind}/${z}/${x}/${y}`, kind === 'loss' ? 30 * 24 * HOUR : 12 * HOUR,
+      async () => ({ ...(await up(`https://tiles.globalforestwatch.org/${path}/dynamic/${z}/${x}/${y}.png`)), source: 'Global Forest Watch' }));
+  },
   async ipgeo(q, rest, req) {
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().replace('::ffff:', '');
     const local = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|$)/.test(ip);
     return { ...(await up(`http://ip-api.com/json/${local ? '' : ip}?fields=status,country,regionName,city,lat,lon`)), source: 'IP-API' };
   },
 };
+
+// Same conversion as js/data.js: OpenAQ PM2.5 → US AQI points in the WAQI station shape.
+function openaqToStations(results) {
+  const bp = [[0, 9, 0, 50], [9, 35.4, 50, 100], [35.4, 55.4, 100, 150], [55.4, 125.4, 150, 200], [125.4, 225.4, 200, 300], [225.4, 500, 300, 500]];
+  const aqi = (c) => { for (const [c0, c1, a0, a1] of bp) if (c <= c1) return a0 + ((Math.max(c, c0) - c0) / (c1 - c0)) * (a1 - a0); return 500; };
+  const fresh = Date.now() - 3 * 86400e3;
+  return JSON.stringify(results
+    .filter((r) => r.coordinates && r.value >= 0 && r.value < 1000 && Date.parse(r.datetime?.utc) > fresh)
+    .map((r) => ({ lat: r.coordinates.latitude, lon: r.coordinates.longitude, aqi: Math.round(aqi(r.value)) })));
+}
 
 // ------------------------------------------------------------------ http
 const server = http.createServer(async (req, res) => {

@@ -20,7 +20,8 @@ node earth/code/server/server.mjs     # http://localhost:8080  (의존성 없음
 | 변수 | 용도 |
 |---|---|
 | `SPACETRACK_USER`, `SPACETRACK_PASS` | Space-Track.org GP(3LE). 없으면 CelesTrak |
-| `WAQI_TOKEN` | WAQI 관측소 AQI. 없으면 Open-Meteo(Copernicus CAMS) 10° 격자 |
+| `WAQI_TOKEN` | WAQI 관측소 AQI. 없으면 OpenAQ, 그것도 없으면 Open-Meteo(Copernicus CAMS) 10° 격자 |
+| `OPENAQ_API_KEY` | OpenAQ v3 관측소 PM2.5 (US AQI로 환산). [explore.openaq.org](https://explore.openaq.org)에서 무료 발급 |
 | `FIRMS_MAP_KEY` | NASA FIRMS VIIRS 24시간 화재 |
 | `NASA_API_KEY` | NASA NeoWs (기본값 `DEMO_KEY`, 시간당 30회) |
 | `OWM_KEY` | OpenWeatherMap `clouds_new` 타일 |
@@ -40,19 +41,28 @@ node earth/code/server/server.mjs     # http://localhost:8080  (의존성 없음
 | 위치 | Geolocation → IP-API(백엔드) / GeoJS → 예테보리 | 3D 핀 + 펄스 링 + 라벨(현지 AQI) | 예테보리 |
 | 카메라 | — | OrbitControls (드래그, 핀치, 줌) | — |
 | 구름 | OWM 타일 (z2, 16장) | **WASM 메르카토르 → 정거원통 재투영**, 투명 구체가 서서히 회전 | 정적 구름 텍스처 |
-| 대기오염 | WAQI 또는 CAMS(Open-Meteo) | **WASM JSON 스캔 → 5° 버킷 IDW 보간 히트맵 + 바람장으로 이동하는 먼지 입자** | 대도시 핫스팟 합성 |
+| 대기오염 | WAQI, OpenAQ(PM2.5) 또는 CAMS(Open-Meteo) | **WASM JSON 스캔 → 5° 버킷 IDW 보간 히트맵 + 바람장으로 이동하는 먼지 입자** | 대도시 핫스팟 합성 |
 | 오로라 | NOAA SWPC OVATION | **WASM 파싱 → 고도 100–300 km 커튼 입자**, 고도에 따라 녹색 → 적색, 깜빡임 셰이더 | Kp 통계 오벌 |
 | 해수면 온도 이상 | NASA GIBS `GHRSST_L4_MUR_Sea_Surface_Temperature_Anomalies` | 해양 마스크 + 물결 펄스 애니메이션 | WASM 절차적 이상장 |
 | 산불 | NASA FIRMS CSV | **WASM CSV 파싱 → FRP(화재 복사 강도) 기반 발광 입자** | 계절별 화재대 모델 |
+| 인구 밀도 | WorldPop 2025 1 km 전 세계 모자이크 → **H3 해상도 4 육각형 50,102개** (`data/population.bin`, 약 1 MB) | 육각 기둥 `InstancedMesh` 1회 드로우콜. 높이·색 = 인구, 실제 H3 셀 방향에 맞춰 회전. 클릭하면 인구·밀도 툴팁 | 정적 파일 |
+| 산림 파괴 | Global Forest Watch 타일: UMD 산림 손실 2001–2025 + GFW 통합 훼손 경보(매일 갱신) | 타일 픽셀에 인코딩된 값(손실 연도, 경보 날짜·신뢰도)을 **WebGL로 원본 RGBA 그대로 해독** → 최근 12개월 경보만 추림 → WASM 메르카토르 재투영 | 실패로 표시 |
+| 가뭄 | Copernicus 글로벌 가뭄 관측소(JRC) WMS `smang` 토양수분 이상, 최신 10일 | EPSG:4326 이미지를 그대로 구에 입힘. 평년 수준(−1…1)은 투명 처리 | 실패로 표시 |
+| 물 부족 위험 | WRI Aqueduct 3.0 기저 물 스트레스 (Resource Watch Carto, 유역 16,307개) | 미리 래스터화한 `data/water-stress.png` | 정적 파일 |
+| 이산화질소 (유럽) | EcoDataCube(OpenGeoHub STAC) Sentinel-5P 대류권 NO₂ 2 km COG, EPSG:3035 | 미리 LAEA → 위경도로 재투영한 `data/no2-europe.png`. 셰이더가 유럽 범위에만 입힘 | 정적 파일 |
 | 해빙 | NSIDC Sea Ice Index v3 일별 면적 | **WASM 극관 메시**(면적을 맞춤). 흰 면 = 현재, 노란 점선 = 1981–2010 중앙값 | 기후값 + 추세 모델 |
 | 야간 불빛 | Black Marble | 밤 영역에서만 발광 | — |
 | 우주 쓰레기 | Space-Track / CelesTrak 파편군 | **WASM TLE 파싱 + SGP4** → LEO 빨강, MEO 주황, GEO 노랑 | 합성 파편 30,000개 |
 | 활성 위성 | CelesTrak `active` | 파랑(ISS는 녹색). **클릭 → WASM 화면 좌표 픽킹(지구 가림 판정)** → 이름, 고도, 속도, 궤도요소 툴팁 | Walker 방식 위성군 합성 |
 | 근접 천체(NEO) | NASA NeoWs feed | 빨간 궤적선 + 현재 위치 점, 클릭하면 툴팁 | 없음 (실패로 표시) |
-| UI | — | 레이어 토글 13개, 상태/스피너, 범례, 배속(×1–×3600), 반응형(모바일은 하단 시트) | — |
+| UI | — | 레이어 토글 18개, 상태/스피너, 범례, 배속(×1–×3600), 반응형(모바일은 하단 시트) | — |
 
 ### 한계
 
+- **인구**: Kontur Population(H3)은 원본이 2.4 GB GeoPackage라 웹에 바로 올릴 수 없습니다. 같은 H3 격자 방식으로 WorldPop 2025(290 MB GeoTIFF)를 집계했습니다. NASA SEDAC GPWv4는 서버가 응답하지 않아 쓰지 않았습니다.
+- **EcoDataCube**: STAC 카탈로그의 NO₂·메탄 컬렉션이 모두 유럽 범위(EPSG:3035)라서 유럽 레이어로 넣었습니다.
+- **OpenAQ**: v3 API는 키가 필요합니다. 키를 넣으면 대기오염 레이어의 관측소 데이터로 쓰입니다.
+- **정적 데이터 다시 만들기**: `code/data/`의 `build_population.py`, `build_water_stress.py`, `build_no2.py`를 실행하면 `data/` 파일을 새로 만듭니다.
 - **SGP4**: Vallado 개정판의 근지구(near-earth) 분기를 전부 구현했고, Vallado 00005 기준값과 일치하는지 테스트합니다. 주기 225분 이상(GEO, GNSS 등)은 단순 항력 분기를 쓰고 **SDP4의 달·태양 섭동 항은 넣지 않았습니다**. 시각화에는 충분하지만 근접 충돌 분석에는 맞지 않습니다.
 - **NEO**: NeoWs feed에는 궤도요소가 없습니다. 그래서 궤적은 접근 거리와 속도로 만든 **모식도**이고, 거리는 로그로 압축해 표시합니다.
 - **해빙**: NSIDC 면적 값은 실측이지만 경계 **모양**은 그 면적에 맞춘 근사 형상입니다. 실제 윤곽 GeoJSON은 쓰지 않았습니다.
@@ -83,11 +93,13 @@ earth/
 │  ├─ orbit-worker.js    궤도 워커
 │  └─ wasm.js            earth.wasm 브리지
 ├─ earth.wasm            빌드 산출물 (커밋됨)
+├─ data/                 미리 가공한 데이터 (인구 H3, 물 스트레스, 유럽 NO₂)
 ├─ textures/             NASA Blue/Black Marble 기반 텍스처 (three-globe 예제, MIT). 구름은 알파 채널에서 추출
 ├─ vendor/               three.js r160 (MIT) + OrbitControls
 └─ code/                 ← 웹에 올리지 않음
    ├─ README.md
    ├─ wasm/              Rust 소스 (sgp4, objects, aurora, air, climate, geo, scan)
+   ├─ data/              data/ 파일을 만드는 Python 스크립트
    ├─ stamp.sh           index.html의 css/js 캐시 태그(?v=) 갱신
    ├─ server/server.mjs  정적 서버 + COOP/COEP + /api 캐시 프록시 + /ws (code/ 는 서빙하지 않음)
    └─ image/             로고 원본과 변환 스크립트

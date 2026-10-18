@@ -103,8 +103,10 @@ export function makeClouds(tex) {
   return new THREE.Mesh(new THREE.SphereGeometry(R_CLOUD, 128, 64), mat);
 }
 
-/** Generic surface overlay (AQI heat-map, SST anomaly) with optional ocean mask & pulse. */
-export function makeOverlay(radius, tex, { waterMask = null, pulse = 0, opacity = 1 } = {}) {
+/** Generic surface overlay (AQI heat-map, SST anomaly, …) with optional ocean mask & pulse.
+ *  `bounds` = [west, south, east, north] places a regional plate-carrée texture; default is the whole globe. */
+export function makeOverlay(radius, tex, { waterMask = null, pulse = 0, opacity = 1, bounds = null } = {}) {
+  const b = bounds || [-180, -90, 180, 90];
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       map: { value: tex },
@@ -113,13 +115,16 @@ export function makeOverlay(radius, tex, { waterMask = null, pulse = 0, opacity 
       uTime: { value: 0 },
       uPulse: { value: pulse },
       uOpacity: { value: opacity },
+      uBounds: { value: new THREE.Vector4((b[0] + 180) / 360, (b[1] + 90) / 180, (b[2] - b[0]) / 360, (b[3] - b[1]) / 180) },
     },
     vertexShader: SURFACE_VS,
     fragmentShader: /* glsl */ `
-      uniform sampler2D map, water; uniform float useMask, uTime, uPulse, uOpacity;
+      uniform sampler2D map, water; uniform float useMask, uTime, uPulse, uOpacity; uniform vec4 uBounds;
       varying vec2 vUv;
       void main() {
-        vec4 t = texture2D(map, vUv);
+        vec2 st = (vUv - uBounds.xy) / uBounds.zw;
+        if (any(lessThan(st, vec2(0.0))) || any(greaterThan(st, vec2(1.0)))) discard;
+        vec4 t = texture2D(map, st);
         float m = useMask > 0.5 ? smoothstep(0.3, 0.7, texture2D(water, vUv).r) : 1.0;
         float wave = 1.0 - uPulse * (0.5 + 0.5 * sin(uTime * 1.3 + vUv.x * 60.0 + sin(vUv.y * 40.0 + uTime) * 2.0));
         gl_FragColor = vec4(t.rgb, t.a * m * uOpacity * (0.55 + 0.45 * wave));
@@ -380,4 +385,70 @@ export function placeOnSurface(obj, lat, lon) {
   obj.position.copy(n);
   obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
   return n;
+}
+
+/** Population on the H3 grid: one hexagonal prism per cell (InstancedMesh, single draw call). */
+export function makeHexColumns() {
+  const geo = new THREE.CylinderGeometry(1, 1, 1, 6, 1);
+  geo.translate(0, 0.5, 0); // base on the surface
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { sunDir: { value: new THREE.Vector3(1, 0, 0) } },
+    vertexShader: /* glsl */ `
+      attribute float aVal;
+      uniform vec3 sunDir;
+      varying vec3 vCol; varying float vShade;
+      vec3 ramp(float t) { // dark violet → magenta → orange → pale yellow
+        vec3 a = vec3(0.23, 0.05, 0.42), b = vec3(0.86, 0.16, 0.47), c = vec3(1.0, 0.55, 0.12), d = vec3(1.0, 0.96, 0.62);
+        return t < 0.4 ? mix(a, b, t / 0.4) : t < 0.75 ? mix(b, c, (t - 0.4) / 0.35) : mix(c, d, (t - 0.75) / 0.25);
+      }
+      void main() {
+        vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0);
+        vec3 n = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+        vec3 up = normalize((modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz);
+        float day = smoothstep(-0.25, 0.3, dot(up, sunDir));
+        vShade = (0.55 + 0.45 * max(dot(n, normalize(up + sunDir * 0.6)), 0.0)) * (0.55 + 0.45 * day);
+        vCol = ramp(aVal) * (position.y > 0.99 ? 1.15 : 1.0);
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: /* glsl */ `
+      varying vec3 vCol; varying float vShade;
+      void main() { gl_FragColor = vec4(vCol * vShade, 1.0); }`,
+  });
+  const mesh = new THREE.InstancedMesh(geo, mat, 1);
+  mesh.count = 0;
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+/** cells: Float32Array of [lat, lon, people, rotation, radiusKm] records (see code/data/build_population.py). */
+export function setHexColumns(old, cells) {
+  const n = cells.length / 5;
+  const mesh = new THREE.InstancedMesh(old.geometry, old.material, n);
+  mesh.frustumCulled = false;
+  const val = new Float32Array(n);
+  const max = Math.max(...Array.from({ length: Math.min(n, 64) }, (_, i) => cells[i * 5 + 2]));
+  const m = new THREE.Matrix4(), up = new THREE.Vector3(), north = new THREE.Vector3(), east = new THREE.Vector3();
+  const vx = new THREE.Vector3(), vz = new THREE.Vector3(), Y = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < n; i++) {
+    const [lat, lon, pop, rot, rKm] = cells.subarray(i * 5, i * 5 + 5);
+    const la = THREE.MathUtils.degToRad(lat), lo = THREE.MathUtils.degToRad(lon);
+    up.set(Math.cos(la) * Math.cos(lo), Math.sin(la), -Math.cos(la) * Math.sin(lo));
+    north.copy(Y).addScaledVector(up, -up.y).normalize();
+    east.crossVectors(north, up);
+    vz.copy(north).multiplyScalar(Math.cos(rot)).addScaledVector(east, Math.sin(rot)); // first H3 vertex
+    vx.crossVectors(up, vz);
+    const t = Math.pow(pop / max, 0.55);
+    const r = (rKm / 6371) * 0.9, h = 0.0015 + 0.15 * t;
+    m.makeBasis(vx.multiplyScalar(r), up.clone().multiplyScalar(h), vz.multiplyScalar(r)).setPosition(up.multiplyScalar(1.0005));
+    mesh.setMatrixAt(i, m);
+    val[i] = Math.pow(pop / max, 0.35);
+  }
+  mesh.geometry = old.geometry.clone();
+  mesh.geometry.setAttribute('aVal', new THREE.InstancedBufferAttribute(val, 1));
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.visible = old.visible;
+  mesh.userData = { cells, max };
+  old.parent?.add(mesh);
+  old.parent?.remove(old);
+  return mesh;
 }
