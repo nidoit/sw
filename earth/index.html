@@ -5,9 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Earth Monitor</title>
   <meta name="description" content="3D 통합 지구/우주 환경 실시간 모니터링 — Three.js + Rust WebAssembly">
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=3344284103">
   <script type="importmap">
-    { "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/" } }
+    { "imports": {
+      "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/",
+      "./js/main.js": "./js/main.js?v=3344284103", "./js/i18n.js": "./js/i18n.js?v=3344284103", "./js/data.js": "./js/data.js?v=3344284103",
+      "./js/layers.js": "./js/layers.js?v=3344284103", "./js/orbit-engine.js": "./js/orbit-engine.js?v=3344284103", "./js/wasm.js": "./js/wasm.js?v=3344284103"
+    } }
   </script>
 </head>
 <body>
@@ -48,6 +52,7 @@
       <label class="row"><input type="checkbox" data-layer="clouds" checked><span class="sw"></span><span class="name" data-i18n="clouds">구름</span><span class="st" data-status="clouds"></span></label>
       <label class="row"><input type="checkbox" data-layer="air"><span class="sw"></span><span class="name" data-i18n="air">대기오염 (AQI)</span><span class="st" data-status="air"></span></label>
       <label class="row"><input type="checkbox" data-layer="aurora" checked><span class="sw"></span><span class="name" data-i18n="aurora">오로라</span><span class="st" data-status="aurora"></span></label>
+      <label class="row"><input type="checkbox" data-layer="no2"><span class="sw"></span><span class="name" data-i18n="no2">이산화질소 NO₂ (유럽)</span><span class="st" data-status="no2"></span></label>
     </section>
 
     <section class="group">
@@ -56,6 +61,14 @@
       <label class="row"><input type="checkbox" data-layer="fires"><span class="sw"></span><span class="name" data-i18n="fires">실시간 산불</span><span class="st" data-status="fires"></span></label>
       <label class="row"><input type="checkbox" data-layer="ice"><span class="sw"></span><span class="name" data-i18n="ice">해빙 면적</span><span class="st" data-status="ice"></span></label>
       <label class="row"><input type="checkbox" data-layer="night" checked><span class="sw"></span><span class="name" data-i18n="night">야간 불빛</span><span class="st" data-status="night"></span></label>
+    </section>
+
+    <section class="group">
+      <h2 data-i18n="gLand">인구 · 토지 · 물</h2>
+      <label class="row"><input type="checkbox" data-layer="pop"><span class="sw"></span><span class="name" data-i18n="pop">인구 밀도 (H3)</span><span class="st" data-status="pop"></span></label>
+      <label class="row"><input type="checkbox" data-layer="deforest"><span class="sw"></span><span class="name" data-i18n="deforest">산림 파괴</span><span class="st" data-status="deforest"></span></label>
+      <label class="row"><input type="checkbox" data-layer="drought"><span class="sw"></span><span class="name" data-i18n="drought">가뭄 (토양수분 이상)</span><span class="st" data-status="drought"></span></label>
+      <label class="row"><input type="checkbox" data-layer="water"><span class="sw"></span><span class="name" data-i18n="water">물 부족 위험</span><span class="st" data-status="water"></span></label>
     </section>
 
     <section class="group">
@@ -77,6 +90,7 @@
       <form id="settings" class="settings" autocomplete="off">
         <label><span data-i18n="kOwm">OpenWeatherMap 키 (구름)</span><input name="owmKey" type="password" data-i18n-ph="optional" placeholder="선택"></label>
         <label><span data-i18n="kWaqi">WAQI 토큰 (대기질)</span><input name="waqiToken" type="password" data-i18n-ph="optWaqi" placeholder="선택 · 없으면 CAMS"></label>
+        <label><span data-i18n="kOpenaq">OpenAQ API 키 (PM2.5)</span><input name="openaqKey" type="password" data-i18n-ph="optional" placeholder="선택"></label>
         <label><span data-i18n="kFirms">NASA FIRMS MAP_KEY (산불)</span><input name="firmsKey" type="password" data-i18n-ph="optional" placeholder="선택"></label>
         <label><span data-i18n="kNasa">NASA API 키 (NEO)</span><input name="nasaKey" type="password" placeholder="DEMO_KEY"></label>
         <label><span data-i18n="kTle">TLE URL (Space-Track 프록시 등)</span><input name="tleUrl" type="url" data-i18n-ph="defTle" placeholder="기본: CelesTrak"></label>
@@ -93,6 +107,6 @@
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="pinLabel" class="pin-label" hidden></div>
 
-  <script type="module" src="js/main.js"></script>
+  <script type="module">import './js/main.js';</script>
 </body>
 </html>

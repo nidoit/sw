@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { loadWasm, julian } from './wasm.js';
 import { createEngine } from './orbit-engine.js';
-import { settings, saveSettings, detectBackend, hasBackend, sources, loadImage, connectStream } from './data.js';
+import { settings, saveSettings, detectBackend, hasBackend, sources, loadImage, loadRawRGBA, connectStream } from './data.js';
 import * as L from './layers.js';
 import { t, applyStatic, setLang, getLang, onLangChange } from './i18n.js';
 
@@ -13,6 +13,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const MOBILE = matchMedia('(pointer: coarse)').matches || innerWidth < 760;
 const GOTHENBURG = { lat: 57.7089, lon: 11.9746, label: 'Göteborg, Västra Götaland, Sweden' };
 const MIN = 60e3, HOUR = 3600e3;
+const NO2_BOUNDS = [-32, 26, 46, 72]; // must match code/data/build_no2.py
 
 // ------------------------------------------------------------------ status helpers
 // `text` may be a function so the chip can be re-rendered when the language changes.
@@ -94,12 +95,18 @@ async function boot() {
   Ly.aurora = L.makeParticles('aurora', 1);
   Ly.fires = L.makeParticles('fire', 1);
   Ly.ice = L.makeIce(spec);
+  Ly.water = L.makeOverlay(1.0018, null, { opacity: 0.8 });
+  Ly.drought = L.makeOverlay(1.0021, null, { opacity: 0.85 });
+  Ly.deforest = L.makeOverlay(1.0024, null, { opacity: 1 });
+  Ly.no2 = L.makeOverlay(1.0045, null, { opacity: 0.85, bounds: NO2_BOUNDS });
+  Ly.pop = L.makeHexColumns();
   Ly.orbitals = L.makeOrbitals();
   Ly.neo = L.makeNeo();
   Ly.pin = L.makePin();
   Ly.earth.renderOrder = 0;
-  scene.add(Ly.earth, Ly.sst, Ly.ice, Ly.air, Ly.dust, Ly.fires, Ly.clouds, Ly.atmo, Ly.aurora, Ly.orbitals, Ly.neo, Ly.pin);
+  scene.add(Ly.earth, Ly.sst, Ly.water, Ly.drought, Ly.deforest, Ly.pop, Ly.ice, Ly.no2, Ly.air, Ly.dust, Ly.fires, Ly.clouds, Ly.atmo, Ly.aurora, Ly.orbitals, Ly.neo, Ly.pin);
   Ly.sst.visible = Ly.air.visible = Ly.dust.visible = Ly.fires.visible = Ly.ice.visible = false;
+  Ly.water.visible = Ly.drought.visible = Ly.deforest.visible = Ly.no2.visible = Ly.pop.visible = false;
 
   state.engine = createEngine(w, state.ref);
   await state.engine.init();
@@ -129,6 +136,7 @@ function loadAll() {
   loadTLE(); loadAurora(); loadClouds(); loadNEO();
   // heavier optional layers load lazily on first toggle, except on desktop where we prefetch
   if (!MOBILE) { loadAir(); loadSST(); loadFires(); loadIce(); }
+  for (const k of ['pop', 'deforest', 'drought', 'water', 'no2']) if (state.layers[k].userData.loaded) LAZY[k]();
 }
 
 function schedule() {
@@ -140,12 +148,14 @@ function schedule() {
   setInterval(loadNEO, 6 * HOUR);
   setInterval(() => state.layers.ice.userData.loaded && loadIce(), 24 * HOUR);
   setInterval(() => state.layers.sst.userData.loaded && loadSST(), 24 * HOUR);
+  setInterval(() => state.layers.drought.userData.loaded && loadDrought(), 24 * HOUR);
+  setInterval(() => state.layers.deforest.userData.loaded && loadDeforest(), 12 * HOUR);
   setInterval(refreshCounts, 1000);
 }
 
 function onStream(m) {
   // backend pushes tiny "refresh" notices when its cache renews; payloads come from /api (cached)
-  const fn = { aurora: loadAurora, air: loadAir, fires: loadFires, tle: loadTLE, neo: loadNEO, seaice: loadIce, sst: loadSST, clouds: loadClouds }[m.layer];
+  const fn = { aurora: loadAurora, air: loadAir, fires: loadFires, tle: loadTLE, neo: loadNEO, seaice: loadIce, sst: loadSST, clouds: loadClouds, drought: loadDrought, deforest: loadDeforest }[m.layer];
   if (m.type === 'refresh' && fn) fn();
 }
 
@@ -403,6 +413,143 @@ async function loadNEO() {
   }
 }
 
+// ------------------------------------------------------------------ population (WorldPop 2025 on H3)
+async function loadPopulation() {
+  status('pop', 'loading', 'WorldPop');
+  try {
+    const cells = await sources.population();
+    const vis = state.layers.pop.visible;
+    state.layers.pop = L.setHexColumns(state.layers.pop, cells);
+    state.layers.pop.visible = vis;
+    const n = cells.length / 5;
+    let total = 0;
+    for (let i = 0; i < n; i++) total += cells[i * 5 + 2];
+    status('pop', 'ok', `H3 ${n.toLocaleString()}`);
+    state.details.pop = () => t('popOk', n, total);
+    state.layers.pop.userData.loaded = true;
+  } catch (err) {
+    status('pop', 'err', fail(err));
+    const msg = fail(err);
+    state.details.pop = () => t('loadFail', msg);
+  }
+}
+
+// ------------------------------------------------------------------ deforestation (Global Forest Watch)
+async function loadDeforest() {
+  const w = state.w, Ly = state.layers;
+  status('deforest', 'loading', 'GFW');
+  const S = 2048; // web-mercator mosaic, both products resampled onto it
+  const merc = new Uint8Array(S * S * 4);
+  const put = (img, ox, oy, size, colorAt) => {
+    const k = img.width / size;
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const si = ((Math.floor(y * k) * img.width) + Math.floor(x * k)) * 4;
+      const c = colorAt(img.data, si);
+      if (!c) continue;
+      const di = ((oy + y) * S + ox + x) * 4;
+      merc.set(c, di);
+    }
+  };
+  let lossPx = 0, alertPx = 0, okTiles = 0;
+  const lossYear = [0, 0];
+  // tree-cover loss 2001–: z2, B = year − 2000, R = intensity (alpha 0 = below the 30 % canopy threshold)
+  const loss = Array.from({ length: 12 }, (_, i) => [i % 4, (i / 4) | 0]); // row 3 is Antarctica
+  // integrated deforestation alerts: z3 rows covering ±41°, R·255+G = days since 2014-12-31, B ≥ 200 = high confidence
+  const alerts = Array.from({ length: 16 }, (_, i) => [i % 8, 3 + ((i / 8) | 0)]);
+  const today = (Date.now() - Date.UTC(2014, 11, 31)) / 86400e3;
+  await Promise.all([
+    ...loss.map(async ([x, y]) => {
+      try {
+        const img = await loadRawRGBA(sources.gfwTile('loss', 2, x, y));
+        okTiles++;
+        put(img, x * 512, y * 512, 512, (d, i) => {
+          if (d[i + 3] === 0 || d[i + 2] < 1) return null;
+          lossPx++;
+          if (2000 + d[i + 2] > lossYear[1]) lossYear[1] = 2000 + d[i + 2];
+          const recent = d[i + 2] >= 20 ? 1 : 0; // 2020+
+          return [recent ? 255 : 220, recent ? 70 : 102, recent ? 160 : 153, 120 + Math.min(110, d[i] * 2)];
+        });
+      } catch { /* tile missing */ }
+    }),
+    ...alerts.map(async ([x, y]) => {
+      try {
+        const img = await loadRawRGBA(sources.gfwTile('alerts', 3, x, y));
+        okTiles++;
+        put(img, x * 256, y * 256, 256, (d, i) => {
+          if (d[i + 3] === 0) return null;
+          const age = today - (d[i] * 255 + d[i + 1]);
+          if (age < 0 || age > 365) return null;
+          alertPx++;
+          const high = d[i + 2] >= 200;
+          return [255, high ? 214 : 160, high ? 40 : 70, 255 - Math.round(age / 3)];
+        });
+      } catch { /* outside the alert coverage */ }
+    }),
+  ]);
+  if (!okTiles) {
+    status('deforest', 'err', 'GFW');
+    state.details.deforest = () => t('loadFail', 'Global Forest Watch');
+    return;
+  }
+  w.put(merc);
+  const DW = 2048, DH = 1024;
+  const out = new Uint8Array(w.u8(w.x.img_merc_to_equirect(S, S, DW, DH), DW * DH * 4));
+  const tex = new THREE.DataTexture(out, DW, DH, THREE.RGBAFormat);
+  tex.flipY = true; tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.needsUpdate = true;
+  Ly.deforest.material.uniforms.map.value?.dispose?.();
+  Ly.deforest.material.uniforms.map.value = tex;
+  status('deforest', 'ok', 'GFW');
+  const last = lossYear[1];
+  state.details.deforest = () => t('deforestOk', last, alertPx > 0);
+  Ly.deforest.userData.loaded = true;
+}
+
+// ------------------------------------------------------------------ drought (Copernicus GDO)
+async function loadDrought() {
+  const Ly = state.layers;
+  status('drought', 'loading', 'GDO');
+  try {
+    const img = await loadImage(sources.droughtUrl());
+    // the WMS paints "near normal" (−1…1) almost white; drop it so only real anomalies cover the globe
+    const cv = new OffscreenCanvas(img.width, img.height), ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, img.width, img.height);
+    const d = px.data;
+    for (let i = 0; i < d.length; i += 4) if (d[i] > 235 && d[i + 1] > 235 && d[i + 2] > 235) d[i + 3] = 0;
+    const tex = new THREE.DataTexture(new Uint8Array(d.buffer), img.width, img.height, THREE.RGBAFormat);
+    tex.flipY = true; tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.needsUpdate = true;
+    Ly.drought.material.uniforms.map.value?.dispose?.();
+    Ly.drought.material.uniforms.map.value = tex;
+    status('drought', 'ok', 'Copernicus GDO');
+    state.details.drought = () => t('droughtOk');
+    Ly.drought.userData.loaded = true;
+  } catch (err) {
+    status('drought', 'err', 'GDO');
+    const msg = fail(err);
+    state.details.drought = () => t('loadFail', `Copernicus GDO (${msg})`);
+  }
+}
+
+// ------------------------------------------------------------------ static rasters (Aqueduct, EcoDataCube)
+async function loadStatic(key, url, srcLabel, detailKey) {
+  const Ly = state.layers;
+  status(key, 'loading', srcLabel);
+  try {
+    const img = await loadImage(url);
+    const tex = new THREE.Texture(img); tex.needsUpdate = true;
+    Ly[key].material.uniforms.map.value = tex;
+    status(key, 'ok', srcLabel);
+    state.details[key] = () => t(detailKey);
+    Ly[key].userData.loaded = true;
+  } catch (err) {
+    status(key, 'err', srcLabel);
+    const msg = fail(err);
+    state.details[key] = () => t('loadFail', msg);
+  }
+}
+const loadWater = () => loadStatic('water', 'data/water-stress.png', 'WRI Aqueduct', 'waterOk');
+const loadNO2 = () => loadStatic('no2', 'data/no2-europe.png', 'EcoDataCube', 'no2Ok');
+
 function buildNeo() {
   const w = state.w, n = state.neoMeta.length;
   if (!n) return;
@@ -414,7 +561,7 @@ function buildNeo() {
 }
 
 // ------------------------------------------------------------------ UI
-const LAZY = { air: loadAir, sst: loadSST, fires: loadFires, ice: loadIce };
+const LAZY = { air: loadAir, sst: loadSST, fires: loadFires, ice: loadIce, pop: loadPopulation, deforest: loadDeforest, drought: loadDrought, water: loadWater, no2: loadNO2 };
 
 function applyVisibility() {
   const v = state.visible, Ly = state.layers;
@@ -426,6 +573,11 @@ function applyVisibility() {
   Ly.sst.visible = v.sst;
   Ly.fires.visible = v.fires;
   Ly.ice.visible = v.ice;
+  Ly.pop.visible = v.pop;
+  Ly.deforest.visible = v.deforest;
+  Ly.drought.visible = v.drought;
+  Ly.water.visible = v.water;
+  Ly.no2.visible = v.no2;
   Ly.earth.material.uniforms.uNight.value = v.night ? 1 : 0;
   Ly.neo.visible = v.neo;
   Ly.orbitals.material.uniforms.uMask.value.set(+v.leo, +v.meo, +v.geo, +v.sats);
@@ -452,14 +604,6 @@ function bindUI() {
   };
   if (MOBILE) setPanel(false);
   toggle.addEventListener('click', () => setPanel(panel.classList.contains('closed')));
-
-  $('#langBtn').addEventListener('click', () => setLang(getLang() === 'ko' ? 'en' : 'ko'));
-  onLangChange(() => {
-    for (const [k, [st, text]] of Object.entries(statusMem)) status(k, st, text);
-    renderDetails();
-    if (!tip.hidden && state.sel < 0) closeTip(); // NEO tooltip is static; satellite tooltips re-render every second
-    hud();
-  });
 
   $('#speed').addEventListener('change', (e) => setClock(simMs(), +e.target.value));
   $('#nowBtn').addEventListener('click', () => setClock(Date.now(), state.clock.speed));
@@ -492,6 +636,11 @@ function renderDetails() {
   if (v.air) parts.push(`<div><b>${t('dAir')}</b><div class="bar" style="background:linear-gradient(90deg,#00d959,#5ae600,#ffeb00,#ff8000,#ff0000,#8f4099,#800024)"></div><div class="scale"><span>0</span><span>50</span><span>100</span><span>150</span><span>200</span><span>300+</span></div>${detail('air') || wait}</div>`);
   if (v.sst) parts.push(`<div><b>${t('dSst')}</b><div class="bar" style="background:linear-gradient(90deg,#1a4dff,#fff,#ff1f0d)"></div><div class="scale"><span>−3°C</span><span>0</span><span>+3°C</span></div>${detail('sst') || wait}</div>`);
   if (v.fires) parts.push(`<div><b>${t('dFires')}</b> ${detail('fires') || wait}</div>`);
+  if (v.no2) parts.push(`<div><b>${t('dNo2')}</b><div class="bar" style="background:linear-gradient(90deg,#30123b,#28bceb,#a4fc3c,#fb7e21,#7a0403)"></div><div class="scale"><span>${t('low')}</span><span>${t('high')}</span></div>${detail('no2') || wait}</div>`);
+  if (v.pop) parts.push(`<div><b>${t('dPop')}</b><div class="bar" style="background:linear-gradient(90deg,#3b0d6b,#db2978,#ff8c1f,#fff59e)"></div><div class="scale"><span>${t('sparse')}</span><span>${t('dense')}</span></div>${detail('pop') || wait}</div>`);
+  if (v.deforest) parts.push(`<div><b>${t('dDeforest')}</b><div class="keys"><span><i style="background:#dc6699"></i>${t('lossOld')}</span><span><i style="background:#ff46a0"></i>${t('lossNew')}</span><span><i style="background:#ffd628"></i>${t('alerts')}</span></div>${detail('deforest') || wait}</div>`);
+  if (v.drought) parts.push(`<div><b>${t('dDrought')}</b><div class="bar" style="background:linear-gradient(90deg,#b35806,#f1a340,#fee0b6,#ffffff,#d1e5f0,#67a9cf,#2166ac)"></div><div class="scale"><span>${t('dry')} ≤ −2</span><span>0</span><span>${t('wet')} ≥ 2</span></div>${detail('drought') || wait}</div>`);
+  if (v.water) parts.push(`<div><b>${t('dWater')}</b><div class="keys">${t('waterCats').map((c, i) => `<span><i style="background:${['#808080', '#ffff99', '#ffe600', '#ff9900', '#ff1900', '#990000'][i]}"></i>${c}</span>`).join('')}</div>${detail('water') || wait}</div>`);
   if (v.ice) parts.push(`<div><b>${t('dIce')}</b> ${detail('ice') || wait}</div>`);
   if (v.aurora) parts.push(`<div><b>${t('dAurora')}</b> ${detail('aurora') || wait}</div>`);
   if (v.clouds) parts.push(`<div><b>${t('dClouds')}</b> ${detail('clouds') || ''}</div>`);
@@ -533,6 +682,10 @@ async function pickAt(cx, cy) {
       if (v.z < 1 && d < bd) { bd = d; best = i; }
     }
     if (best >= 0) return showNeoTip(best, cx, cy);
+  }
+  if (state.visible.pop && state.layers.pop.userData.cells) {
+    const hit = pickPopulation(nx, ny);
+    if (hit) return showPopTip(hit, cx, cy);
   }
   const vis = state.visible;
   const mask = (vis.leo ? 1 : 0) | (vis.meo ? 2 : 0) | (vis.geo ? 4 : 0) | (vis.sats ? 8 : 0);
@@ -577,6 +730,43 @@ function showNeoTip(i, cx, cy) {
       <dt>${t('tDist')}</dt><dd>${m.ld.toFixed(2)} LD · ${(m.missKm / 1e6).toFixed(2)} ${t('mkm')}</dd>
       <dt>${t('tRelV')}</dt><dd>${m.v.toFixed(2)} km/s</dd>
       <dt>${t('tDia')}</dt><dd>≤ ${(m.dia * 1000).toFixed(0)} m</dd>
+    </dl>`;
+  tip.querySelector('button').onclick = closeTip;
+  tip.hidden = false;
+  placeTip(cx, cy);
+}
+
+// Ray → globe → nearest H3 cell centre (cells are ~25 km across, so this is exact enough to read off a value).
+function pickPopulation(nx, ny) {
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(nx, ny), camera);
+  const o = ray.ray.origin, d = ray.ray.direction;
+  const b = o.dot(d), c = o.lengthSq() - 1, disc = b * b - c;
+  if (disc < 0) return null;
+  const p = o.clone().addScaledVector(d, -b - Math.sqrt(disc));
+  const lat = THREE.MathUtils.radToDeg(Math.asin(p.y)), lon = THREE.MathUtils.radToDeg(Math.atan2(-p.z, p.x));
+  const cells = state.layers.pop.userData.cells;
+  const cl = Math.cos(THREE.MathUtils.degToRad(lat));
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < cells.length; i += 5) {
+    const dla = cells[i] - lat;
+    let dlo = Math.abs(cells[i + 1] - lon); if (dlo > 180) dlo = 360 - dlo;
+    const dd = dla * dla + (dlo * cl) ** 2;
+    if (dd < bd) { bd = dd; best = i; }
+  }
+  if (best < 0 || Math.sqrt(bd) * 111.2 > cells[best + 4] * 1.1) return null;
+  return { lat: cells[best], lon: cells[best + 1], pop: cells[best + 2], rKm: cells[best + 4] };
+}
+
+function showPopTip(c, cx, cy) {
+  clearInterval(tipTimer);
+  const area = 2.598 * c.rKm * c.rKm; // regular hexagon
+  tip.innerHTML = `<h3><span>${t('popCell')}</span><button aria-label="${t('close')}">×</button></h3>
+    <dl>
+      <dt>${t('people')}</dt><dd>${Math.round(c.pop).toLocaleString()}</dd>
+      <dt>${t('density')}</dt><dd>${Math.round(c.pop / area).toLocaleString()} /km²</dd>
+      <dt>${t('tPos')}</dt><dd>${c.lat.toFixed(2)}°, ${c.lon.toFixed(2)}°</dd>
+      <dt>${t('cell')}</dt><dd>H3 res 4 · ≈${Math.round(area).toLocaleString()} km²</dd>
     </dl>`;
   tip.querySelector('button').onclick = closeTip;
   tip.hidden = false;
@@ -633,6 +823,7 @@ function frame(now) {
   sun.set(s[0], s[1], s[2]);
   for (const m of [Ly.earth, Ly.atmo, Ly.clouds]) m.material.uniforms.sunDir.value.copy(sun);
   Ly.ice.userData.mat.uniforms.sunDir.value.copy(sun);
+  Ly.pop.material.uniforms.sunDir.value.copy(sun);
 
   syncOrbitals();
   Ly.orbitals.material.uniforms.uTime.value = t;
@@ -690,8 +881,16 @@ function hud() {
     + `crossOriginIsolated=${self.crossOriginIsolated} · LOD cap ${state.lodCap.toLocaleString()}${MOBILE ? ` (${t('mobile')})` : ''}`;
 }
 
+// Language switch is wired before boot so it works while (or even if) loading is still in progress.
 applyStatic();
 $('#bootMsg').textContent = t('bootLoading');
+$('#langBtn').addEventListener('click', () => setLang(getLang() === 'ko' ? 'en' : 'ko'));
+onLangChange(() => {
+  for (const [k, [st, text]] of Object.entries(statusMem)) status(k, st, text);
+  renderDetails();
+  if (!tip.hidden && state.sel < 0) closeTip(); // NEO tooltip is static; satellite tooltips re-render every second
+  if (state.engine) hud();
+});
 boot().catch((err) => {
   console.error(err);
   $('#bootMsg').textContent = t('bootFail', err.message);
