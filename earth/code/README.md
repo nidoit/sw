@@ -30,6 +30,8 @@ node earth/code/server/server.mjs     # http://localhost:8080  (의존성 없음
 
 패널 오른쪽 위 버튼으로 한국어 / English를 바꿉니다. 처음에는 브라우저 언어를 따르고, 고른 언어는 localStorage에 저장됩니다.
 
+`css/`나 `js/`를 고친 뒤에는 `earth/code/stamp.sh`를 실행하세요. `index.html`의 `?v=` 태그가 바뀌어서, 브라우저가 캐시된 예전 스크립트를 쓰지 않습니다.
+
 ## 기능과 구현
 
 | 기능 | 데이터 | 구현 | 대체 (오프라인) |
@@ -86,6 +88,7 @@ earth/
 └─ code/                 ← 웹에 올리지 않음
    ├─ README.md
    ├─ wasm/              Rust 소스 (sgp4, objects, aurora, air, climate, geo, scan)
+   ├─ stamp.sh           index.html의 css/js 캐시 태그(?v=) 갱신
    ├─ server/server.mjs  정적 서버 + COOP/COEP + /api 캐시 프록시 + /ws (code/ 는 서빙하지 않음)
    └─ image/             로고 원본과 변환 스크립트
 ```

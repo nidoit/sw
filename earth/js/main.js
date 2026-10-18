@@ -453,14 +453,6 @@ function bindUI() {
   if (MOBILE) setPanel(false);
   toggle.addEventListener('click', () => setPanel(panel.classList.contains('closed')));
 
-  $('#langBtn').addEventListener('click', () => setLang(getLang() === 'ko' ? 'en' : 'ko'));
-  onLangChange(() => {
-    for (const [k, [st, text]] of Object.entries(statusMem)) status(k, st, text);
-    renderDetails();
-    if (!tip.hidden && state.sel < 0) closeTip(); // NEO tooltip is static; satellite tooltips re-render every second
-    hud();
-  });
-
   $('#speed').addEventListener('change', (e) => setClock(simMs(), +e.target.value));
   $('#nowBtn').addEventListener('click', () => setClock(Date.now(), state.clock.speed));
 
@@ -690,8 +682,16 @@ function hud() {
     + `crossOriginIsolated=${self.crossOriginIsolated} · LOD cap ${state.lodCap.toLocaleString()}${MOBILE ? ` (${t('mobile')})` : ''}`;
 }
 
+// Language switch is wired before boot so it works while (or even if) loading is still in progress.
 applyStatic();
 $('#bootMsg').textContent = t('bootLoading');
+$('#langBtn').addEventListener('click', () => setLang(getLang() === 'ko' ? 'en' : 'ko'));
+onLangChange(() => {
+  for (const [k, [st, text]] of Object.entries(statusMem)) status(k, st, text);
+  renderDetails();
+  if (!tip.hidden && state.sel < 0) closeTip(); // NEO tooltip is static; satellite tooltips re-render every second
+  if (state.engine) hud();
+});
 boot().catch((err) => {
   console.error(err);
   $('#bootMsg').textContent = t('bootFail', err.message);
