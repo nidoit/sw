@@ -1,0 +1,44 @@
+[package]
+name = "maya-chronos"
+version = "0.1.0"
+edition = "2021"
+description = "3D Maya calendar (Tzolk'in / Haab' / Long Count) + real-time clock, rendered with WebGL2 from Rust/WASM"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+md5 = "0.7"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "console",
+  "Window",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "HtmlCanvasElement",
+  "HtmlImageElement",
+  "CanvasRenderingContext2d",
+  "CanvasGradient",
+  "WebGl2RenderingContext",
+  "WebGlProgram",
+  "WebGlShader",
+  "WebGlBuffer",
+  "WebGlTexture",
+  "WebGlUniformLocation",
+  "WebGlVertexArrayObject",
+  "Event",
+  "EventTarget",
+  "MouseEvent",
+  "Performance",
+]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

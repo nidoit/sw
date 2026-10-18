@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Earth Monitor</title>
+  <meta name="description" content="3D 통합 지구/우주 환경 실시간 모니터링 — Three.js + Rust WebAssembly">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/" } }
+  </script>
+</head>
+<body>
+  <canvas id="scene" aria-label="3D 지구"></canvas>
+
+  <div id="boot" class="boot">
+    <div class="spinner big"></div>
+    <p id="bootMsg">WASM 모듈과 텍스처를 불러오는 중…</p>
+  </div>
+
+  <button id="panelToggle" class="panel-toggle" aria-controls="panel" aria-expanded="true" title="레이어 패널">☰</button>
+
+  <aside id="panel" class="panel" aria-label="레이어 제어">
+    <header class="panel-head">
+      <h1>🌍 Earth Monitor <small>v2.0</small></h1>
+      <div class="clock">
+        <span id="simTime">—</span>
+        <div class="clock-ctl">
+          <select id="speed" aria-label="시뮬레이션 배속">
+            <option value="1">실시간 ×1</option>
+            <option value="10">×10</option>
+            <option value="60">×60 (1분/초)</option>
+            <option value="600">×600</option>
+            <option value="3600">×3600 (1시간/초)</option>
+          </select>
+          <button id="nowBtn" title="현재 시각으로">지금</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="group">
+      <h2>FR-1 · 위치</h2>
+      <label class="row"><input type="checkbox" data-layer="pin" checked><span class="sw"></span><span class="name">내 위치</span><span class="st" data-status="pin"></span></label>
+    </section>
+
+    <section class="group">
+      <h2>FR-2 · 기상 · 대기</h2>
+      <label class="row"><input type="checkbox" data-layer="clouds" checked><span class="sw"></span><span class="name">구름</span><span class="st" data-status="clouds"></span></label>
+      <label class="row"><input type="checkbox" data-layer="air"><span class="sw"></span><span class="name">대기오염 (AQI)</span><span class="st" data-status="air"></span></label>
+      <label class="row"><input type="checkbox" data-layer="aurora" checked><span class="sw"></span><span class="name">오로라</span><span class="st" data-status="aurora"></span></label>
+    </section>
+
+    <section class="group">
+      <h2>FR-3 · 기후 위기 · 환경 한계선</h2>
+      <label class="row"><input type="checkbox" data-layer="sst"><span class="sw"></span><span class="name">해수면 온도 이상</span><span class="st" data-status="sst"></span></label>
+      <label class="row"><input type="checkbox" data-layer="fires"><span class="sw"></span><span class="name">실시간 산불</span><span class="st" data-status="fires"></span></label>
+      <label class="row"><input type="checkbox" data-layer="ice"><span class="sw"></span><span class="name">해빙 면적</span><span class="st" data-status="ice"></span></label>
+      <label class="row"><input type="checkbox" data-layer="night" checked><span class="sw"></span><span class="name">야간 불빛</span><span class="st" data-status="night"></span></label>
+    </section>
+
+    <section class="group">
+      <h2>FR-4 · 우주 환경</h2>
+      <label class="row"><input type="checkbox" data-layer="leo" checked><span class="sw"></span><span class="dot leo"></span><span class="name">LEO 파편 <em data-count="0"></em></span></label>
+      <label class="row"><input type="checkbox" data-layer="meo" checked><span class="sw"></span><span class="dot meo"></span><span class="name">MEO 파편 <em data-count="1"></em></span></label>
+      <label class="row"><input type="checkbox" data-layer="geo" checked><span class="sw"></span><span class="dot geo"></span><span class="name">GEO 파편 <em data-count="2"></em></span></label>
+      <label class="row"><input type="checkbox" data-layer="sats" checked><span class="sw"></span><span class="dot sat"></span><span class="name">인공위성 <em data-count="3"></em></span><span class="st" data-status="tle"></span></label>
+      <label class="row"><input type="checkbox" data-layer="neo"><span class="sw"></span><span class="dot neo"></span><span class="name">지구 근접 천체</span><span class="st" data-status="neo"></span></label>
+    </section>
+
+    <details class="group" id="legendBox">
+      <summary>범례 · 상세</summary>
+      <div id="details" class="details"></div>
+    </details>
+
+    <details class="group">
+      <summary>설정 · API 키</summary>
+      <form id="settings" class="settings" autocomplete="off">
+        <label>OpenWeatherMap 키 (구름)<input name="owmKey" type="password" placeholder="선택"></label>
+        <label>WAQI 토큰 (대기질)<input name="waqiToken" type="password" placeholder="선택 · 없으면 CAMS"></label>
+        <label>NASA FIRMS MAP_KEY (산불)<input name="firmsKey" type="password" placeholder="선택"></label>
+        <label>NASA API 키 (NEO)<input name="nasaKey" type="password" placeholder="DEMO_KEY"></label>
+        <label>TLE URL (Space-Track 프록시 등)<input name="tleUrl" type="url" placeholder="기본: CelesTrak"></label>
+        <label>WebSocket URL<input name="wsUrl" type="url" placeholder="기본: 백엔드 /ws"></label>
+        <label>합성 파편 수 <output id="debrisOut"></output><input name="debris" type="range" min="0" max="60000" step="1000"></label>
+        <div class="btns"><button type="submit">저장 후 다시 불러오기</button></div>
+        <p class="hint">키는 이 브라우저(localStorage)에만 저장됩니다. 백엔드(server/server.mjs)를 쓰면 키를 서버 환경변수로 둘 수 있습니다.</p>
+      </form>
+    </details>
+
+    <footer class="hud" id="hud"></footer>
+  </aside>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+  <div id="pinLabel" class="pin-label" hidden></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

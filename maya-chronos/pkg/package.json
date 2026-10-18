@@ -1,0 +1,17 @@
+{
+  "name": "maya-chronos",
+  "type": "module",
+  "description": "3D Maya calendar (Tzolk'in / Haab' / Long Count) + real-time clock, rendered with WebGL2 from Rust/WASM",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "maya_chronos_bg.wasm",
+    "maya_chronos.js",
+    "maya_chronos.d.ts"
+  ],
+  "main": "maya_chronos.js",
+  "types": "maya_chronos.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
