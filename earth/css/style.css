@@ -34,6 +34,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 
 .panel-head h1 { font-size: 17px; margin: 2px 0 8px; letter-spacing: .2px; }
 .panel-head h1 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+.panel-head h1 { display: flex; align-items: baseline; gap: 6px; }
+.lang-btn { margin-left: auto; padding: 2px 10px; font-size: 12px; font-weight: 600; border-radius: 999px; cursor: pointer; }
+.lang-btn:hover { border-color: var(--accent); }
 .clock { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
 #simTime { font-variant-numeric: tabular-nums; font-size: 13px; }
 .clock-ctl { display: flex; gap: 6px; }

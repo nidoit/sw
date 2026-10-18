@@ -96,7 +96,7 @@ export const sources = {
 
   async fires() {
     if (backend) return getText('api/fires', { timeout: 90000 });
-    if (!settings.firmsKey) throw new Error('FIRMS MAP_KEY 없음');
+    if (!settings.firmsKey) throw new Error('no FIRMS MAP_KEY');
     return getText(`https://firms.modaps.eosdis.nasa.gov/api/area/csv/${settings.firmsKey}/VIIRS_SNPP_NRT/world/1`, { timeout: 90000 });
   },
 

@@ -6,6 +6,7 @@ import { loadWasm, julian } from './wasm.js';
 import { createEngine } from './orbit-engine.js';
 import { settings, saveSettings, detectBackend, hasBackend, sources, loadImage, connectStream } from './data.js';
 import * as L from './layers.js';
+import { t, applyStatic, setLang, getLang, onLangChange } from './i18n.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -14,13 +15,18 @@ const GOTHENBURG = { lat: 57.7089, lon: 11.9746, label: 'Göteborg, Västra Göt
 const MIN = 60e3, HOUR = 3600e3;
 
 // ------------------------------------------------------------------ status helpers
+// `text` may be a function so the chip can be re-rendered when the language changes.
+const statusMem = {};
 function status(key, state, text = '') {
+  statusMem[key] = [state, text];
   const el = $(`[data-status="${key}"]`);
   if (!el) return;
+  const s = typeof text === 'function' ? text() : text;
   el.className = `st ${state}`;
-  el.textContent = text;
-  el.title = text;
+  el.textContent = s;
+  el.title = s;
 }
+const detail = (k) => { const v = state.details[k]; return typeof v === 'function' ? v() : v; };
 const fail = (e) => (e?.message || String(e)).slice(0, 60);
 
 // ------------------------------------------------------------------ renderer & scene
@@ -65,7 +71,7 @@ async function boot() {
   state.w = w;
   if (!settings.debris) settings.debris = MOBILE ? 9000 : 30000;
 
-  bootMsg.textContent = '지구 텍스처 준비 중…';
+  bootMsg.textContent = t('bootTextures');
   const [day, night, bump, spec, clouds, stars] = await Promise.all([
     texFirst('textures/8k_earth_daymap.jpg', 'textures/earth-blue-marble.jpg'),
     texFirst('textures/8k_earth_nightmap.jpg', 'textures/earth-night.jpg'),
@@ -99,8 +105,8 @@ async function boot() {
   await state.engine.init();
   state.engine.setClock(state.clock);
 
-  bootMsg.textContent = 'WASM: 궤도 파편 개체군 생성 중…';
-  status('tle', 'loading', '합성 개체군');
+  bootMsg.textContent = t('bootSynth');
+  status('tle', 'loading', () => t('synthPop'));
   await state.engine.synth(settings.debris, 1, 7);
 
   camera.position.set(0, 1.2, innerWidth / innerHeight < 0.8 ? 5.6 : 3.6);
@@ -111,13 +117,12 @@ async function boot() {
   $('#boot').classList.add('done');
 
   status('night', 'ok', 'Black Marble');
-  status('clouds', 'ok', '정적 텍스처');
+  status('clouds', 'ok', () => t('staticTex'));
   locate();
   loadAll();
   schedule();
   connectStream(onStream, (s) => (state.details.ws = s));
-  if (!backend) state.details.backend = '없음 (API 직접 호출)';
-  else state.details.backend = '연결됨 (캐싱 프록시)';
+  state.details.backend = () => t(backend ? 'backendOn' : 'noBackend');
 }
 
 function loadAll() {
@@ -144,9 +149,9 @@ function onStream(m) {
   if (m.type === 'refresh' && fn) fn();
 }
 
-// ------------------------------------------------------------------ FR-1.2 location
+// ------------------------------------------------------------------ location
 async function locate() {
-  status('pin', 'loading', '위치 확인');
+  status('pin', 'loading', () => t('locating'));
   const geo = () => new Promise((res, rej) => {
     if (!navigator.geolocation) return rej(new Error('no geolocation'));
     navigator.geolocation.getCurrentPosition(
@@ -155,35 +160,38 @@ async function locate() {
   });
   let loc;
   try { loc = await geo(); } catch {
-    try { loc = await sources.ipLocation(); } catch { loc = { ...GOTHENBURG, source: '기본값' }; }
+    try { loc = await sources.ipLocation(); } catch { loc = { ...GOTHENBURG, source: null }; }
   }
   state.loc = loc;
   const n = L.placeOnSurface(state.layers.pin, loc.lat, loc.lon);
   const aqi = state.w.x.air_sample(loc.lat, loc.lon);
   $('#pinLabel').textContent = `📍 ${loc.label}${Number.isFinite(aqi) ? ` · AQI ${Math.round(aqi)}` : ''}`;
-  status('pin', loc.source === '기본값' ? 'warn' : 'ok', loc.source);
+  status('pin', loc.source ? 'ok' : 'warn', loc.source || (() => t('defaultLoc')));
   // fly the camera above the user
   const dist = camera.position.length();
   camera.position.copy(n.clone().multiplyScalar(dist).add(new THREE.Vector3(0, 0.4, 0)));
 }
 
-// ------------------------------------------------------------------ FR-4 TLE
+// ------------------------------------------------------------------ TLE
 async function loadTLE() {
   const e = state.engine;
-  status('tle', 'loading', 'TLE 수신');
+  status('tle', 'loading', () => t('tleLoading'));
   try {
     const parts = await sources.tle();
     await e.clear(0);
     let added = 0;
     for (const p of parts) added += (await e.loadTLE(p.text, p.kind)).added;
-    if (added < 100) throw new Error('TLE 비어 있음');
+    if (added < 100) throw new Error('TLE empty');
     if (settings.debris) await e.synth(settings.debris, 0, 7);
     status('tle', 'ok', `${parts[0].source} ${added.toLocaleString()}`);
-    state.details.tle = `실측 TLE ${added.toLocaleString()}개 (${parts.map((p) => p.source).filter((v, i, a) => a.indexOf(v) === i).join(', ')})${parts.some((p) => p.cached) ? ' · 캐시' : ''} + 합성 파편 ${settings.debris.toLocaleString()}개`;
+    const srcs = parts.map((p) => p.source).filter((v, i, a) => a.indexOf(v) === i).join(', ');
+    const cached = parts.some((p) => p.cached), debris = settings.debris;
+    state.details.tle = () => t('tleOk', added, srcs, cached, debris);
   } catch (err) {
     if (e.count === 0) await e.synth(settings.debris, 1, 7);
-    status('tle', 'warn', '합성 개체군');
-    state.details.tle = `TLE 수신 실패(${fail(err)}) → WASM 합성 개체군(파편 ${settings.debris.toLocaleString()} + 위성군 Walker shell)`;
+    status('tle', 'warn', () => t('synthPop'));
+    const msg = fail(err), debris = settings.debris;
+    state.details.tle = () => t('tleFail', msg, debris);
   }
   refreshCounts();
 }
@@ -194,7 +202,7 @@ async function refreshCounts() {
   $$('[data-count]').forEach((el) => (el.textContent = Math.round(state.counts[+el.dataset.count] + (el.dataset.count === '3' ? state.counts[4] : 0)).toLocaleString()));
 }
 
-// ------------------------------------------------------------------ FR-2.3 aurora
+// ------------------------------------------------------------------ aurora
 async function loadAurora() {
   const w = state.w;
   status('aurora', 'loading', 'OVATION');
@@ -203,21 +211,24 @@ async function loadAurora() {
     const r = await sources.aurora();
     if (w.x.aurora_parse(w.put(r.text)) < 1000) throw new Error('grid');
     const ft = r.text.match(/"Forecast Time"\s*:\s*"([^"]+)"/);
-    src = `NOAA OVATION ${ft ? ft[1].replace('T', ' ').slice(0, 16) + 'Z' : ''}`;
+    const name = `NOAA OVATION ${ft ? ft[1].replace('T', ' ').slice(0, 16) + 'Z' : ''}`;
+    src = () => name;
     status('aurora', 'ok', 'NOAA SWPC');
   } catch (err) {
     w.x.aurora_synth(3, julian(simMs()));
-    src = `NOAA 연결 실패(${fail(err)}) → WASM 통계 오벌(Kp 3)`;
-    status('aurora', 'warn', '모델 (Kp 3)');
+    const msg = fail(err);
+    src = () => t('auroraFail', msg);
+    status('aurora', 'warn', () => t('kp3'));
   }
   const n = w.x.aurora_generate(MOBILE ? 15000 : 45000, 11);
   L.setParticles(state.layers.aurora, w.f32(w.x.aurora_ptr(), n * 5), n);
   w.x.aurora_stats();
   const s = w.scratch(3);
-  state.details.aurora = `${src} · 최대 확률 ${Math.round(s[0])}% · 입자 ${n.toLocaleString()}`;
+  const pmax = Math.round(s[0]);
+  state.details.aurora = () => t('auroraStats', src(), pmax, n);
 }
 
-// ------------------------------------------------------------------ FR-2.2 air quality
+// ------------------------------------------------------------------ air quality
 async function loadAir() {
   const w = state.w, Ly = state.layers;
   status('air', 'loading', 'AQI');
@@ -227,14 +238,15 @@ async function loadAir() {
     const r = await sources.air();
     const kind = r.kind || (r.source || '').toLowerCase();
     const n = kind.includes('waqi') ? w.x.air_parse_waqi(w.put(r.text)) : w.x.air_parse_openmeteo(w.put(r.text));
-    if (n < 20) throw new Error('관측점 부족');
-    src = `${r.source} · 관측점 ${n.toLocaleString()}`;
+    if (n < 20) throw new Error('too few stations');
+    src = () => t('airSrc', r.source, n);
     status('air', 'ok', r.source);
   } catch (err) {
     w.x.air_clear();
     w.x.air_synth(5);
-    src = `수신 실패(${fail(err)}) → 합성 도시 핫스팟`;
-    status('air', 'warn', '합성');
+    const msg = fail(err);
+    src = () => t('airFail', msg);
+    status('air', 'warn', () => t('synth'));
   }
   const W = 512, H = 256;
   const rgba = new Uint8Array(w.u8(w.x.air_build(W, H), W * H * 4));
@@ -245,7 +257,8 @@ async function loadAir() {
   w.x.air_particles_init(MOBILE ? 5000 : 14000, 3);
   w.x.air_stats();
   const s = w.scratch(3);
-  state.details.air = `${src} · 평균 AQI ${Math.round(s[1])}, 최대 ${Math.round(s[2])}`;
+  const avg = Math.round(s[1]), max = Math.round(s[2]);
+  state.details.air = () => t('airStats', src(), avg, max);
   Ly.air.userData.loaded = true;
   if (state.loc) {
     const a = w.x.air_sample(state.loc.lat, state.loc.lon);
@@ -253,15 +266,15 @@ async function loadAir() {
   }
 }
 
-// ------------------------------------------------------------------ FR-2.1 clouds
+// ------------------------------------------------------------------ clouds
 async function loadClouds() {
   const w = state.w, mat = state.layers.clouds.material;
   if (!sources.owmTile(0, 0, 0)) {
-    status('clouds', 'ok', '정적 텍스처');
-    state.details.clouds = 'OpenWeatherMap 키 없음 → 정적 위성 구름 합성 텍스처 (설정에서 키 입력 시 실시간)';
+    status('clouds', 'ok', () => t('staticTex'));
+    state.details.clouds = () => t('cloudsNoKey');
     return;
   }
-  status('clouds', 'loading', 'OWM 타일');
+  status('clouds', 'loading', () => t('owmTiles'));
   try {
     const Z = 2, N = 1 << Z, T = 256;
     const cv = new OffscreenCanvas(N * T, N * T), ctx = cv.getContext('2d');
@@ -278,16 +291,18 @@ async function loadClouds() {
     mat.uniforms.map.value = t;
     mat.uniforms.useAlpha.value = 1;
     status('clouds', 'ok', 'OpenWeatherMap');
-    state.details.clouds = `OpenWeatherMap clouds_new z${Z} → WASM 메르카토르→정거원통 재투영 (${new Date().toLocaleTimeString()})`;
+    const at = new Date();
+    state.details.clouds = () => t('cloudsOk', Z, at.toLocaleTimeString());
   } catch (err) {
     mat.uniforms.map.value = state.layers.clouds.userData.staticTex;
     mat.uniforms.useAlpha.value = 0;
-    status('clouds', 'warn', '정적 텍스처');
-    state.details.clouds = `OWM 실패(${fail(err)}) → 정적 텍스처`;
+    status('clouds', 'warn', () => t('staticTex'));
+    const msg = fail(err);
+    state.details.clouds = () => t('cloudsFail', msg);
   }
 }
 
-// ------------------------------------------------------------------ FR-3.1 SST anomaly
+// ------------------------------------------------------------------ SST anomaly
 async function loadSST() {
   const w = state.w, Ly = state.layers;
   status('sst', 'loading', 'GIBS');
@@ -295,23 +310,24 @@ async function loadSST() {
   try {
     let img;
     for (const d of [2, 3, 5]) { try { img = await loadImage(sources.sstUrl(d)); break; } catch { /* older day */ } }
-    if (!img) throw new Error('GIBS 응답 없음');
+    if (!img) throw new Error('no GIBS image');
     t = new THREE.Texture(img); t.needsUpdate = true;
     status('sst', 'ok', 'NASA GIBS MUR');
-    state.details.sst = 'NASA GIBS · GHRSST L4 MUR 해수면 온도 이상 (2일 지연)';
+    state.details.sst = () => t('sstOk');
   } catch (err) {
     const W = 1024, H = 512;
     const rgba = new Uint8Array(w.u8(w.x.sst_synth(W, H, 1.1, 9), W * H * 4));
     t = new THREE.DataTexture(rgba, W, H, THREE.RGBAFormat); t.flipY = true; t.magFilter = t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
-    status('sst', 'warn', 'WASM 모델');
-    state.details.sst = `GIBS 실패(${fail(err)}) → WASM 절차적 이상장 (북대서양·북동태평양 해양열파, ENSO +1.1)`;
+    status('sst', 'warn', () => t('model'));
+    const msg = fail(err);
+    state.details.sst = () => t('sstFail', msg);
   }
   Ly.sst.material.uniforms.map.value?.dispose?.();
   Ly.sst.material.uniforms.map.value = t;
   Ly.sst.userData.loaded = true;
 }
 
-// ------------------------------------------------------------------ FR-3.2 fires
+// ------------------------------------------------------------------ fires
 async function loadFires() {
   const w = state.w;
   status('fires', 'loading', 'FIRMS');
@@ -319,21 +335,22 @@ async function loadFires() {
   try {
     const r = await sources.fires();
     const n = w.x.fire_parse_csv(w.put(r.text));
-    if (n === 0) throw new Error('CSV 비어 있음');
+    if (n === 0) throw new Error('empty CSV');
     status('fires', 'ok', `FIRMS ${n.toLocaleString()}`);
-    state.details.fires = `NASA FIRMS VIIRS S-NPP NRT · 24시간 화재 ${n.toLocaleString()}점`;
+    state.details.fires = () => t('firesOk', n);
   } catch (err) {
     const doy = (simMs() - Date.UTC(new Date(simMs()).getUTCFullYear(), 0, 0)) / 86400e3;
     const n = w.x.fire_synth(doy, 4);
-    status('fires', 'warn', '계절 모델');
-    state.details.fires = `FIRMS 불가(${fail(err)}) → WASM 계절 화재대 모델 ${n.toLocaleString()}점`;
+    status('fires', 'warn', () => t('seasonal'));
+    const msg = fail(err);
+    state.details.fires = () => t('firesFail', msg, n);
   }
   const n = w.x.fire_build();
   L.setParticles(state.layers.fires, w.f32(w.x.fire_ptr(), n * 5), n);
   state.layers.fires.userData.loaded = true;
 }
 
-// ------------------------------------------------------------------ FR-3.3 sea ice
+// ------------------------------------------------------------------ sea ice
 async function loadIce() {
   const w = state.w;
   status('ice', 'loading', 'NSIDC');
@@ -355,21 +372,19 @@ async function loadIce() {
   const dims = w.x.ice_dims();
   L.setIce(state.layers.ice, verts, dims >> 16, dims & 0xffff);
   const pct = (a, b) => `${a.toFixed(2)} (${(((a - b) / b) * 100).toFixed(0)}%)`;
-  status('ice', live === 2 ? 'ok' : 'warn', live === 2 ? 'NSIDC' : '추세 모델');
-  state.details.ice = `${live === 2 ? 'NSIDC Sea Ice Index v3' : 'NSIDC 불가 → 기후값+추세 모델'} · 단위 10⁶ km²<br>`
-    + `북극 ${pct(s[0], s[1])} / 기준 ${s[1].toFixed(2)}<br>남극 ${pct(s[2], s[3])} / 기준 ${s[3].toFixed(2)}<br>`
-    + '<small>흰 면 = 현재 해빙, 노란 점선 = 1981–2010 중앙값 경계 (면적 일치 근사 형상)</small>';
+  status('ice', live === 2 ? 'ok' : 'warn', live === 2 ? 'NSIDC' : () => t('trend'));
+  state.details.ice = () => t('iceBody', t('iceSrc', live === 2), pct(s[0], s[1]), s[1].toFixed(2), pct(s[2], s[3]), s[3].toFixed(2));
   state.layers.ice.userData.loaded = true;
 }
 
-// ------------------------------------------------------------------ FR-4.3 NEO
+// ------------------------------------------------------------------ NEO
 async function loadNEO() {
   const w = state.w;
   status('neo', 'loading', 'NeoWs');
   try {
     const r = await sources.neo();
     const n = w.x.neo_parse(w.put(r.text));
-    if (!n) throw new Error('목록 비어 있음');
+    if (!n) throw new Error('empty list');
     state.neoMeta = Array.from({ length: n }, (_, i) => {
       w.x.neo_info(i);
       const s = Array.from(w.scratch(7));
@@ -378,11 +393,13 @@ async function loadNEO() {
     buildNeo();
     status('neo', 'ok', `NeoWs ${n}`);
     const top = [...state.neoMeta].sort((a, b) => a.ld - b.ld).slice(0, 5);
-    state.details.neo = `NASA NeoWs 7일 접근 ${n}개 (위험 ${state.neoMeta.filter((m) => m.haz).length}) · 궤적은 접근거리·속도 기반 모식도, 거리 로그 압축<ul>`
-      + top.map((m) => `<li>${m.haz ? '⚠️ ' : ''}${m.name} · ${m.ld.toFixed(1)} LD · ${m.v.toFixed(1)} km/s · ${new Date(m.ca).toISOString().slice(5, 16).replace('T', ' ')}Z</li>`).join('') + '</ul>';
+    const haz = state.neoMeta.filter((m) => m.haz).length;
+    const list = '<ul>' + top.map((m) => `<li>${m.haz ? '⚠️ ' : ''}${m.name} · ${m.ld.toFixed(1)} LD · ${m.v.toFixed(1)} km/s · ${new Date(m.ca).toISOString().slice(5, 16).replace('T', ' ')}Z</li>`).join('') + '</ul>';
+    state.details.neo = () => t('neoOk', n, haz) + list;
   } catch (err) {
     status('neo', 'err', fail(err));
-    state.details.neo = `NeoWs 수신 실패: ${fail(err)} (DEMO_KEY는 시간당 30회 제한)`;
+    const msg = fail(err);
+    state.details.neo = () => t('neoFail', msg);
   }
 }
 
@@ -436,6 +453,14 @@ function bindUI() {
   if (MOBILE) setPanel(false);
   toggle.addEventListener('click', () => setPanel(panel.classList.contains('closed')));
 
+  $('#langBtn').addEventListener('click', () => setLang(getLang() === 'ko' ? 'en' : 'ko'));
+  onLangChange(() => {
+    for (const [k, [st, text]] of Object.entries(statusMem)) status(k, st, text);
+    renderDetails();
+    if (!tip.hidden && state.sel < 0) closeTip(); // NEO tooltip is static; satellite tooltips re-render every second
+    hud();
+  });
+
   $('#speed').addEventListener('change', (e) => setClock(simMs(), +e.target.value));
   $('#nowBtn').addEventListener('click', () => setClock(Date.now(), state.clock.speed));
 
@@ -462,22 +487,22 @@ function bindUI() {
 }
 
 function renderDetails() {
-  const d = state.details, v = state.visible;
+  const v = state.visible, wait = t('loading');
   const parts = [];
-  if (v.air) parts.push(`<div><b>대기오염 (US AQI)</b><div class="bar" style="background:linear-gradient(90deg,#00d959,#5ae600,#ffeb00,#ff8000,#ff0000,#8f4099,#800024)"></div><div class="scale"><span>0</span><span>50</span><span>100</span><span>150</span><span>200</span><span>300+</span></div>${d.air || '로딩 중…'}</div>`);
-  if (v.sst) parts.push(`<div><b>해수면 온도 이상</b><div class="bar" style="background:linear-gradient(90deg,#1a4dff,#fff,#ff1f0d)"></div><div class="scale"><span>−3°C</span><span>0</span><span>+3°C</span></div>${d.sst || '로딩 중…'}</div>`);
-  if (v.fires) parts.push(`<div><b>산불</b> ${d.fires || '로딩 중…'}</div>`);
-  if (v.ice) parts.push(`<div><b>해빙</b> ${d.ice || '로딩 중…'}</div>`);
-  if (v.aurora) parts.push(`<div><b>오로라</b> ${d.aurora || '로딩 중…'}</div>`);
-  if (v.clouds) parts.push(`<div><b>구름</b> ${d.clouds || ''}</div>`);
-  parts.push(`<div><b>궤도 객체</b> ${d.tle || ''}<br><small>LEO &lt;2,000 km · GEO 35,786±1,000 km · 그 외 MEO (평균 고도 기준). 클릭하면 상세 정보.</small></div>`);
-  if (v.neo) parts.push(`<div><b>지구 근접 천체</b> ${d.neo || '로딩 중…'}</div>`);
-  parts.push(`<div><b>백엔드</b> ${d.backend || ''} · WebSocket ${d.ws || 'off'}</div>`);
+  if (v.air) parts.push(`<div><b>${t('dAir')}</b><div class="bar" style="background:linear-gradient(90deg,#00d959,#5ae600,#ffeb00,#ff8000,#ff0000,#8f4099,#800024)"></div><div class="scale"><span>0</span><span>50</span><span>100</span><span>150</span><span>200</span><span>300+</span></div>${detail('air') || wait}</div>`);
+  if (v.sst) parts.push(`<div><b>${t('dSst')}</b><div class="bar" style="background:linear-gradient(90deg,#1a4dff,#fff,#ff1f0d)"></div><div class="scale"><span>−3°C</span><span>0</span><span>+3°C</span></div>${detail('sst') || wait}</div>`);
+  if (v.fires) parts.push(`<div><b>${t('dFires')}</b> ${detail('fires') || wait}</div>`);
+  if (v.ice) parts.push(`<div><b>${t('dIce')}</b> ${detail('ice') || wait}</div>`);
+  if (v.aurora) parts.push(`<div><b>${t('dAurora')}</b> ${detail('aurora') || wait}</div>`);
+  if (v.clouds) parts.push(`<div><b>${t('dClouds')}</b> ${detail('clouds') || ''}</div>`);
+  parts.push(`<div><b>${t('dOrbit')}</b> ${detail('tle') || ''}<br><small>${t('orbitNote')}</small></div>`);
+  if (v.neo) parts.push(`<div><b>${t('dNeo')}</b> ${detail('neo') || wait}</div>`);
+  parts.push(`<div><b>${t('dBackend')}</b> ${detail('backend') || ''} · WebSocket ${detail('ws') || 'off'}</div>`);
   $('#details').innerHTML = parts.join('');
 }
 setInterval(() => $('#legendBox')?.open && renderDetails(), 2000);
 
-// ------------------------------------------------------------------ FR-4.2 picking & tooltip
+// ------------------------------------------------------------------ picking & tooltip
 const tip = $('#tooltip');
 let tipTimer = 0;
 
@@ -522,16 +547,16 @@ async function pickAt(cx, cy) {
     const r = await state.engine.info(idx);
     if (!r.ok) return closeTip();
     const [alt, spd, lat, lon, inc, per, pg, ap, norad, cat, syn, ecc] = r.vals;
-    const catName = ['LEO 파편', 'MEO 파편', 'GEO 파편', '활성 위성', '유인 우주정거장'][cat] || '-';
-    tip.innerHTML = `<h3><span>${escapeHtml(r.name)}</span><button aria-label="닫기">×</button></h3>
+    const catName = t('cats')[cat] || '-';
+    tip.innerHTML = `<h3><span>${escapeHtml(r.name)}</span><button aria-label="${t('close')}">×</button></h3>
       <dl>
-        <dt>분류</dt><dd>${catName} ${syn ? '<span class="tag">합성</span>' : `<span class="tag">NORAD ${norad}</span>`}</dd>
-        <dt>고도</dt><dd>${alt.toLocaleString(undefined, { maximumFractionDigits: 0 })} km</dd>
-        <dt>속도</dt><dd>${spd.toFixed(3)} km/s (${(spd * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} km/h)</dd>
-        <dt>위치</dt><dd>${lat.toFixed(2)}°, ${lon.toFixed(2)}°</dd>
-        <dt>경사각</dt><dd>${inc.toFixed(2)}° · e ${ecc.toFixed(4)}</dd>
-        <dt>주기</dt><dd>${per.toFixed(1)} 분</dd>
-        <dt>근/원지점</dt><dd>${pg.toFixed(0)} / ${ap.toFixed(0)} km</dd>
+        <dt>${t('tCat')}</dt><dd>${catName} ${syn ? `<span class="tag">${t('synth')}</span>` : `<span class="tag">NORAD ${norad}</span>`}</dd>
+        <dt>${t('tAlt')}</dt><dd>${alt.toLocaleString(undefined, { maximumFractionDigits: 0 })} km</dd>
+        <dt>${t('tSpeed')}</dt><dd>${spd.toFixed(3)} km/s (${(spd * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} km/h)</dd>
+        <dt>${t('tPos')}</dt><dd>${lat.toFixed(2)}°, ${lon.toFixed(2)}°</dd>
+        <dt>${t('tInc')}</dt><dd>${inc.toFixed(2)}° · e ${ecc.toFixed(4)}</dd>
+        <dt>${t('tPeriod')}</dt><dd>${per.toFixed(1)} ${t('min')}</dd>
+        <dt>${t('tPgAp')}</dt><dd>${pg.toFixed(0)} / ${ap.toFixed(0)} km</dd>
       </dl>`;
     tip.querySelector('button').onclick = closeTip;
   };
@@ -545,13 +570,13 @@ async function pickAt(cx, cy) {
 function showNeoTip(i, cx, cy) {
   const m = state.neoMeta[i];
   clearInterval(tipTimer);
-  tip.innerHTML = `<h3><span>${m.haz ? '⚠️ ' : ''}${escapeHtml(m.name)}</span><button aria-label="닫기">×</button></h3>
+  tip.innerHTML = `<h3><span>${m.haz ? '⚠️ ' : ''}${escapeHtml(m.name)}</span><button aria-label="${t('close')}">×</button></h3>
     <dl>
-      <dt>분류</dt><dd>지구 근접 소행성 ${m.haz ? '<span class="tag">잠재 위험</span>' : ''}</dd>
-      <dt>최근접</dt><dd>${new Date(m.ca).toISOString().replace('T', ' ').slice(0, 16)} UTC</dd>
-      <dt>거리</dt><dd>${m.ld.toFixed(2)} LD · ${(m.missKm / 1e6).toFixed(2)}백만 km</dd>
-      <dt>상대 속도</dt><dd>${m.v.toFixed(2)} km/s</dd>
-      <dt>추정 지름</dt><dd>≤ ${(m.dia * 1000).toFixed(0)} m</dd>
+      <dt>${t('tCat')}</dt><dd>${t('asteroid')} ${m.haz ? `<span class="tag">${t('hazard')}</span>` : ''}</dd>
+      <dt>${t('tClosest')}</dt><dd>${new Date(m.ca).toISOString().replace('T', ' ').slice(0, 16)} UTC</dd>
+      <dt>${t('tDist')}</dt><dd>${m.ld.toFixed(2)} LD · ${(m.missKm / 1e6).toFixed(2)} ${t('mkm')}</dd>
+      <dt>${t('tRelV')}</dt><dd>${m.v.toFixed(2)} km/s</dd>
+      <dt>${t('tDia')}</dt><dd>≤ ${(m.dia * 1000).toFixed(0)} m</dd>
     </dl>`;
   tip.querySelector('button').onclick = closeTip;
   tip.hidden = false;
@@ -645,7 +670,7 @@ function frame(now) {
   controls.update();
   renderer.render(scene, camera);
 
-  // FPS + LOD (NFR-1/NFR-2): shrink the rendered instance count when frames drop
+  // FPS + LOD: shrink the rendered instance count when frames drop
   fpsAcc += dt; fpsN++;
   if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; hud(); }
   if ((lodTimer += dt) > 2) {
@@ -660,12 +685,14 @@ function hud() {
   const d = new Date(simMs());
   $('#simTime').textContent = `${d.toISOString().replace('T', ' ').slice(0, 19)} UTC`;
   $('#hud').textContent =
-    `FPS ${fps.toFixed(0)} · 렌더 객체 ${state.layers.orbitals.count.toLocaleString()} / ${e.count.toLocaleString()}\n`
+    `FPS ${fps.toFixed(0)} · ${t('hudObjects')} ${state.layers.orbitals.count.toLocaleString()} / ${e.count.toLocaleString()}\n`
     + `SGP4 ${e.computeMs.toFixed(1)} ms · ${e.mode}\n`
-    + `crossOriginIsolated=${self.crossOriginIsolated} · LOD cap ${state.lodCap.toLocaleString()}${MOBILE ? ' (모바일)' : ''}`;
+    + `crossOriginIsolated=${self.crossOriginIsolated} · LOD cap ${state.lodCap.toLocaleString()}${MOBILE ? ` (${t('mobile')})` : ''}`;
 }
 
+applyStatic();
+$('#bootMsg').textContent = t('bootLoading');
 boot().catch((err) => {
   console.error(err);
-  $('#bootMsg').textContent = `초기화 실패: ${err.message}. 로컬 파일(file://)이 아닌 HTTP 서버로 열어 주세요 (node server/server.mjs).`;
+  $('#bootMsg').textContent = t('bootFail', err.message);
 });

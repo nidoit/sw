@@ -23,6 +23,12 @@ pub fn start() -> Result<(), JsValue> {
     app::run()
 }
 
+/// Gate plaque texts and zoom-button texts ([overview, detail]) in the page's language.
+#[wasm_bindgen]
+pub fn set_labels(date: &str, time: &str, zoom_in: &str, zoom_out: &str) -> Result<(), JsValue> {
+    app::set_labels(date, time, zoom_in, zoom_out)
+}
+
 fn console_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         web_sys::console::error_1(&format!("panic: {info}").into());

@@ -111,6 +111,14 @@ pub struct App {
     ui_ctx: CanvasRenderingContext2d,
     last_second: i64,
     el: Readout,
+    /// Indices into `props` of the DATE / TIME gate plaques.
+    label_props: [usize; 2],
+    /// Button text for [overview, detail] views; replaced by `set_labels`.
+    button_text: [String; 2],
+}
+
+thread_local! {
+    static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
 }
 
 struct Readout {
@@ -203,13 +211,18 @@ impl App {
         divider.cuboid(Vec3::new(GATE_DIVIDER_X, GATE_Y + 0.05, 0.0), Vec3::new(0.5, 0.5, 4.4), 0.0, hex(0x222222));
         props.push(Prop { mesh: r.upload(&divider)?, tex: None, mat: DARK_METAL });
 
-        for (text, x) in [
+        let mut label_props = [0; 2];
+        for (k, (text, x)) in [
             ("DATE", (GATE_X_IN + GATE_DIVIDER_X) / 2.0),
             ("TIME", (GATE_DIVIDER_X + GATE_X_OUT) / 2.0),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut plane = MeshBuilder::new();
             plane.plane_xz(Vec3::new(x, 0.36, -2.95), 4.8, 1.2, [1.0, 1.0, 1.0]);
             let tex = r.canvas_texture(&draw2d::label(&doc, text)?, None)?;
+            label_props[k] = props.len();
             props.push(Prop { mesh: r.upload(&plane)?, tex: Some(tex), mat: UNLIT });
         }
 
@@ -259,6 +272,8 @@ impl App {
             ui_ctx,
             last_second: i64::MIN,
             el,
+            label_props,
+            button_text: ["Read The Gate (Zoom In)".into(), "View Entire Mechanism (Zoom Out)".into()],
         })
     }
 
@@ -268,11 +283,19 @@ impl App {
 
     fn toggle_view(&mut self, now: f64) {
         self.detail = !self.detail;
-        set_text(
-            &self.el.button_label,
-            if self.detail { "View Entire Mechanism (Zoom Out)" } else { "Read The Gate (Zoom In)" },
-        );
+        set_text(&self.el.button_label, &self.button_text[self.detail as usize]);
         self.retarget_camera(now, 2.0);
+    }
+
+    fn set_labels(&mut self, date: &str, time: &str, zoom_in: &str, zoom_out: &str) -> Result<(), JsValue> {
+        for (i, text) in self.label_props.into_iter().zip([date, time]) {
+            let canvas = draw2d::label(&self.doc, text)?;
+            let tex = self.props[i].tex.take();
+            self.props[i].tex = Some(self.r.canvas_texture(&canvas, tex)?);
+        }
+        self.button_text = [zoom_in.into(), zoom_out.into()];
+        set_text(&self.el.button_label, &self.button_text[self.detail as usize]);
+        Ok(())
     }
 
     fn retarget_camera(&mut self, now: f64, duration: f64) {
@@ -396,6 +419,7 @@ impl App {
 pub fn run() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or("no window")?;
     let app = Rc::new(RefCell::new(App::new(window.clone())?));
+    APP.with(|a| *a.borrow_mut() = Some(app.clone()));
 
     // camera toggle button
     if let Some(btn) = app.borrow().doc.get_element_by_id("toggle-cam-btn") {
@@ -425,4 +449,12 @@ pub fn run() -> Result<(), JsValue> {
         window.request_animation_frame(cb.as_ref().unchecked_ref())?;
     }
     Ok(())
+}
+
+/// Relabels the gate plaques and the zoom button (called from the page's language switch).
+pub fn set_labels(date: &str, time: &str, zoom_in: &str, zoom_out: &str) -> Result<(), JsValue> {
+    APP.with(|a| match a.borrow().as_ref() {
+        Some(app) => app.borrow_mut().set_labels(date, time, zoom_in, zoom_out),
+        None => Err("app not started".into()),
+    })
 }
